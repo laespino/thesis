@@ -35,12 +35,12 @@ knitr::opts_chunk$set(echo = TRUE)
 #install.packages("ggplot2")
 #install.packages("xtable")
 #install.packages("texreg")
-library(texreg)
 library(ggfortify)
 library(gridExtra)
 library(dplyr)
 library(ggplot2)
 library(xtable)
+library(texreg)
 #only keep people who have recidivated in the past two years or have at least two years outside a correctional facility
 raw_data <- read.csv(file="~/Desktop/Senior Year/Comp Stats/thesis/compas-scores-two-years.csv", header = TRUE, sep = ",")
 
@@ -107,6 +107,7 @@ df_bw <- mutate(df, crime_factor = factor(c_charge_degree)) %>%
 
 #Summary Statistics
 
+Correlation between jail sentence as decile score
 ```{r}
 df_bw$length_of_stay <- as.numeric(as.Date(df_bw$c_jail_out) - as.Date(df_bw$c_jail_in))
 cor(df_bw$length_of_stay, df_bw$decile_score)
@@ -126,15 +127,7 @@ print(paste("White defendants:",round((2051 / 5114 * 100),2), "%"))
 ```
 
 ```{r}
-summary(df_bw$score_text)
-```
-
-```{r}
-xtabs(~ sex + race, data=df)
-```
-
-```{r}
-summary(df_bw$sex)
+xtabs(~ sex + race, data=df_bw)
 ```
 
 ```{r}
@@ -163,19 +156,19 @@ grid.arrange(pblack, pwhite,  ncol = 2)
 ```
 
 ```{r}
-xtabs(~ decile_score + race, data=df)
+xtabs(~ decile_score + race, data=df_bw)
 ```
 
 
 ```{r}
-summary(df)
+summary(df_bw)
 ```
 
 #Risk Score Distributions
 
 Risk Score Distribution by Sex (colored by race)
 ```{r}
-ggplot(df, aes(decile_score)) + geom_histogram(aes(color=race)) + facet_wrap('sex')
+ggplot(df_bw, aes(decile_score)) + geom_histogram(aes(color=race), bins = 10) + facet_wrap('sex') + theme(legend.position="bottom") + theme(legend.title = element_blank()) + labs(x="Decile Risk Score")
 ```
 -Very few white people were given a score of 1 for both sexes
 -Defendant count tapers off as decile score increases for Black females, but not for Black males
@@ -183,13 +176,13 @@ ggplot(df, aes(decile_score)) + geom_histogram(aes(color=race)) + facet_wrap('se
 
 Risk Score Distribution by Race (colored by sex)
 ```{r}
-ggplot(df, aes(decile_score)) + geom_histogram(aes(color=sex)) + facet_wrap('race')
+ggplot(df_bw, aes(decile_score)) + geom_histogram(aes(color=sex), bins = 10) + facet_wrap('race') + theme(legend.position="bottom") + theme(legend.title = element_blank()) + labs(x="Decile Risk Score")
 ```
 -Most observations are from male defendants 
 
 Risk Score Distribution by Age Category (colored by race)
 ```{r}
-ggplot(df, aes(decile_score)) + geom_histogram(aes(color=race)) + facet_wrap('age_cat')
+ggplot(df_bw, aes(decile_score)) + geom_histogram(aes(color=race), bins=10) + facet_wrap('age_cat') + theme(legend.position="bottom") + theme(legend.title = element_blank()) + labs(x="Decile Risk Score")
 ```
 -There is a drastic spike in the number of older age defendants who were given a score of 1
 -For older and middle-age classified defendants, the higher the decile score, the less people were given that score
@@ -198,7 +191,7 @@ For younger classified defendants, little to no people were given a score of 1 a
 
 Jail Sentence by Age, Decile Score, and Race
 ```{r}
-p <- ggplot(df, aes(decile_score, jail_sentence)) + geom_point()
+p <- ggplot(df_bw, aes(decile_score, jail_sentence)) + geom_point()
 p + facet_grid(race ~ age_cat, labeller = label_both)
 ```
 -More extreme sentences were given disproportionately to younger and middle-aged Black defendants with higher risk scores
@@ -208,20 +201,37 @@ p + facet_grid(race ~ age_cat, labeller = label_both)
 
 #Actual Recidivism Distributions 
 
+Actual Recidivism (within 2 years) by Race and Age Category
 ```{r}
-a <- ggplot(df, aes(two_year_recid)) + geom_bar()
+a <- ggplot(df_bw, aes(two_year_recid)) + geom_bar()
 a + facet_grid(race ~ age_cat, labeller = label_both)
 ```
+
+Actual Recidivism by Race and COMPAS Classification
+
+```{r}
+
+levels(df_bw$two_year_recid)
+```
+
+
+```{r}
+df_bw <- mutate(df_bw, recid = ifelse(two_year_recid==0, "Did not recidivate", "Recidivated")) %>%
+  mutate(compas_pred = ifelse(score_factor=="LowScore", "Low Risk", "High Risk"))
+ggplot(df_bw, aes(race)) + geom_bar(aes(fill=compas_pred)) + facet_wrap('recid')+ theme(legend.position="bottom") +   scale_fill_discrete(name = 'COMPAS Classification') + labs(x="Decile Risk Score") 
+```
+
 
 #Priors Count Distributions
 Priors Count by Sex and Race
 ```{r}
-ggplot(df, aes(race, priors_count)) + geom_boxplot() + facet_wrap('sex')
+ggplot(df_bw, aes(race, priors_count)) + geom_boxplot() + facet_wrap('sex')
 ```
 -The average number of priors is about the same for female defendants across race and slightly higher for Black male defendants than White male defendants
 -The priors count distribution is skewed right by about the same amount for Black females and White males 
 -The priors count distribution for Black males is is skewed right about 2.5 more than the priors count distribution for White males
 -There are more extreme outliers for White females than Black females and more extreme outliers for Black males than White Males
+
 
 
 
