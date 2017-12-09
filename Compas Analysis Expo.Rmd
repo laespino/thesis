@@ -1,0 +1,691 @@
+---
+title: "Compa Analysis Exploration"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+#FPR and FNR bounds
+```{r}
+pw = 0.1
+pb = 0.3
+PPV = 0.6
+
+fnr = seq(0,1,by=0.01)
+fprw = pw/(1-pw) * (1-PPV)/PPV * (1-fnr)
+fprb = pb/(1-pb) * (1-PPV)/PPV * (1-fnr)
+
+plot(fnr, fprb, type="l", col="red")
+lines(fnr, fprw, col="blue")
+
+#the larger the prevalence, the bigger the FPR for a given FNR
+
+plot(fprb, fnr, type="l", col="red")
+lines(fprw, fnr, col="blue")
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#install.packages("gridExtra")
+#install.packages("ggfortify")
+#install.packages("dplyr")
+#install.packages("ggplot2")
+#install.packages("xtable")
+#install.packages("texreg")
+library(texreg)
+library(ggfortify)
+library(gridExtra)
+library(dplyr)
+library(ggplot2)
+library(xtable)
+#only keep people who have recidivated in the past two years or have at least two years outside a correctional facility
+raw_data <- read.csv(file="~/Desktop/Senior Year/Comp Stats/thesis/compas-scores-two-years.csv", header = TRUE, sep = ",")
+
+nrow(raw_data)
+```
+
+#Subset data 
+Remove rows that meet the following: 
+
+-If the charge date of a defendants Compas scored crime was not within 30 days from when the person was arrested, we assume that because of data quality reasons, that we do not have the right offense.
+-We coded the recidivist flag -- is_recid -- to be -1 if we could not find a compas case at all.
+-In a similar vein, ordinary traffic offenses -- those with a c_charge_degree of 'O' -- will not result in Jail time are removed (only two of them).
+-We filtered the underlying data from Broward county to include only those rows representing people who had either recidivated in two years, or had at least two years outside of a correctional facility.
+-Since there are not very many observations for other races, keep only cases for Black and White defendants.
+
+```{r}
+df <- dplyr::select(raw_data, age, c_charge_degree, race, age_cat, score_text, sex, priors_count, 
+                    days_b_screening_arrest, decile_score, is_recid, two_year_recid, c_jail_in, c_jail_out) %>% 
+        filter(days_b_screening_arrest <= 30) %>%
+        filter(days_b_screening_arrest >= -30) %>%
+        filter(is_recid != -1) %>%
+        filter(c_charge_degree != "O") %>%
+        filter(score_text != 'N/A') %>%
+        filter(race == "Caucasian" | race == "African-American")
+nrow(df)
+
+```
+
+Add variable for time spent in jail in units of weeks
+```{r}
+jail_in <- as.POSIXct(df$c_jail_in,
+                                      format='%Y-%m-%d %H:%M:%S')
+jail_out <- as.POSIXct(df$c_jail_out,
+                                      format='%Y-%m-%d %H:%M:%S')
+df <- mutate(df, jail_sentence = difftime(jail_out,jail_in,units="weeks")) 
+
+```
+
+Look for cases where defendants recidivated after the two-year threshold
+```{r}
+table(df$two_year_recid, df$is_recid)
+```
+
+Remove cases where defendants recidivated sometime after two years
+```{r}
+df <- df %>% filter((two_year_recid != 1 & is_recid != 1) | (two_year_recid != 0 & is_recid != 0) )
+            
+nrow(df)
+```
+
+Add factor variables that will later be used in logistic model 
+
+```{r}
+df_bw <- mutate(df, crime_factor = factor(c_charge_degree)) %>%
+      mutate(age_factor = as.factor(age_cat)) %>%
+      within(age_factor <- relevel(age_factor, ref = 1)) %>%
+      mutate(race_factor = factor(race)) %>%
+      within(race_factor <- relevel(race_factor, ref = 2)) %>%
+      mutate(gender_factor = factor(sex, labels= c("Female","Male"))) %>%
+      within(gender_factor <- relevel(gender_factor, ref = 2)) %>%
+      mutate(score_factor = factor(score_text != "Low", labels = c("LowScore","HighScore")))
+```
+
+
+#Summary Statistics
+
+```{r}
+df_bw$length_of_stay <- as.numeric(as.Date(df_bw$c_jail_out) - as.Date(df_bw$c_jail_in))
+cor(df_bw$length_of_stay, df_bw$decile_score)
+```
+
+```{r}
+summary(df_bw$age_cat)
+```
+
+```{r}
+summary(df_bw$race)
+```
+
+```{r}
+print(paste("Black defendants:",round((3063 / 5114 * 100),2), "%"))
+print(paste("White defendants:",round((2051 / 5114 * 100),2), "%"))
+```
+
+```{r}
+summary(df_bw$score_text)
+```
+
+```{r}
+xtabs(~ sex + race, data=df)
+```
+
+```{r}
+summary(df_bw$sex)
+```
+
+```{r}
+print(paste("Men:",round((4997 / 6172 * 100),2), "%"))
+print(paste("Women:",round((1175 / 6172 * 100),2), "%"))
+```
+
+```{r}
+nrow(filter(df_bw, two_year_recid == 1))
+```
+
+```{r}
+nrow(filter(df_bw, two_year_recid == 1)) / nrow(df) * 100
+```
+
+```{r}
+library(grid)
+library(gridExtra)
+pblack <- ggplot(data=filter(df, race =="African-American"), aes(ordered(decile_score))) + 
+          geom_bar() + xlab("Decile Score") +
+          ylim(0, 650) + ggtitle("Black Defendant's Decile Scores")
+pwhite <- ggplot(data=filter(df, race =="Caucasian"), aes(ordered(decile_score))) + 
+          geom_bar() + xlab("Decile Score") +
+          ylim(0, 650) + ggtitle("White Defendant's Decile Scores")
+grid.arrange(pblack, pwhite,  ncol = 2)
+```
+
+```{r}
+xtabs(~ decile_score + race, data=df)
+```
+
+
+```{r}
+summary(df)
+```
+
+#Risk Score Distributions
+
+Risk Score Distribution by Sex (colored by race)
+```{r}
+ggplot(df, aes(decile_score)) + geom_histogram(aes(color=race)) + facet_wrap('sex')
+```
+-Very few white people were given a score of 1 for both sexes
+-Defendant count tapers off as decile score increases for Black females, but not for Black males
+
+
+Risk Score Distribution by Race (colored by sex)
+```{r}
+ggplot(df, aes(decile_score)) + geom_histogram(aes(color=sex)) + facet_wrap('race')
+```
+-Most observations are from male defendants 
+
+Risk Score Distribution by Age Category (colored by race)
+```{r}
+ggplot(df, aes(decile_score)) + geom_histogram(aes(color=race)) + facet_wrap('age_cat')
+```
+-There is a drastic spike in the number of older age defendants who were given a score of 1
+-For older and middle-age classified defendants, the higher the decile score, the less people were given that score
+For younger classified defendants, little to no people were given a score of 1 and there does no downward trend in count number as decile score increases. Decile scores seem to be pretty evenly distributed 
+
+
+Jail Sentence by Age, Decile Score, and Race
+```{r}
+p <- ggplot(df, aes(decile_score, jail_sentence)) + geom_point()
+p + facet_grid(race ~ age_cat, labeller = label_both)
+```
+-More extreme sentences were given disproportionately to younger and middle-aged Black defendants with higher risk scores
+-One extreme case of a Black defendants with a very low risk score given a very high jail sentence 
+
+
+
+#Actual Recidivism Distributions 
+
+```{r}
+a <- ggplot(df, aes(two_year_recid)) + geom_bar()
+a + facet_grid(race ~ age_cat, labeller = label_both)
+```
+
+#Priors Count Distributions
+Priors Count by Sex and Race
+```{r}
+ggplot(df, aes(race, priors_count)) + geom_boxplot() + facet_wrap('sex')
+```
+-The average number of priors is about the same for female defendants across race and slightly higher for Black male defendants than White male defendants
+-The priors count distribution is skewed right by about the same amount for Black females and White males 
+-The priors count distribution for Black males is is skewed right about 2.5 more than the priors count distribution for White males
+-There are more extreme outliers for White females than Black females and more extreme outliers for Black males than White Males
+
+
+
+#Logistic regression models for actual recidivism 
+
+```{r}
+log_actual <- glm(two_year_recid ~ crime_factor + age_factor + race_factor + gender_factor + score_factor + priors_count, family="binomial", data=df_bw)
+summary(log_actual)
+```
+
+While type of crime, age category, gender, and COMPAS classification were significant factors in determining whether or not a defendant actually recidivated, being Black or White was not a significant factor. 
+
+#FPR/FNR rates with changes in classification threshold with each race
+
+
+
+#Original Thresholds
+
+Confusion Matrix for Black defendants, original risk scores
+```{r}
+cm_b <- df_bw %>% filter(race == "African-American") %>% 
+  select(two_year_recid, score_factor) %>%
+  table()
+xtable(cm_b)
+```
+FPR: 581/1402 = 41.44%
+FNR: 473/1661 = 28.48%
+PPV: 1188/1769 = 67.16%
+p: 1661/3063 = 54.23%
+
+Confusion Matrix for Caucasian, original risk scores
+```{r}
+cm_w <- df_bw %>% filter(race == "Caucasian") %>% 
+  select(two_year_recid, score_factor) %>%
+  table()
+xtable(cm_w)
+```
+FPR: 266/1229 = 21.64%
+FNR: 408/822 = 49.64%
+PPV: 414/680 = 60.88%
+p: 822/2051 = 40.08%
+
+#New thresholds for Black defendants
+
+Subtract 1 from AA risk score 
+```{r}
+df_b1 <- mutate(df_bw, decile1 = ifelse(race=="African-American", decile_score - 1, decile_score)) %>%
+          mutate(riskclass1 = ifelse(decile1 > 4, "HighScore", "LowScore"))
+```
+
+Compute new confusion matrices
+```{r}
+cm_b1 <- df_b1 %>% filter(race == "African-American") %>% 
+  select(two_year_recid, riskclass1) %>%
+  table()
+xtable(cm_b1)
+```
+FPR: 429/1402 = 30.60%
+FNR: 631/1661 = 37.99%
+PPV: 1030/1459 = 70.60%
+p: 1661/3063 = 54.23%
+
+
+
+Subtract 2 from AA risk score 
+
+```{r}
+df_b2 <- mutate(df_bw, decile2 = ifelse(race=="African-American", decile_score - 2, decile_score)) %>%
+          mutate(riskclass2 = ifelse(decile2 > 4, "HighScore", "LowScore"))
+```
+
+Compute new confusion matrices
+```{r}
+cm_b2 <- df_b2 %>% filter(race == "African-American") %>% 
+  select(two_year_recid, riskclass2) %>%
+  table()
+xtable(cm_b2)
+```
+FPR: 311/1402 = 22.18%
+FNR: 818/1661 = 49.25%
+PPV: 843/1154 = 73.05%
+p: 1661/3063 = 54.23%
+
+
+
+
+
+Subtract 3 from AA risk score 
+
+```{r}
+df_b3 <- mutate(df_bw, decile3 = ifelse(race=="African-American", decile_score - 3, decile_score)) %>%
+          mutate(riskclass3 = ifelse(decile3 > 4, "HighScore", "LowScore"))
+```
+
+Compute new confusion matrices
+```{r}
+cm_b3 <- df_b3 %>% filter(race == "African-American") %>% 
+  select(two_year_recid, riskclass3) %>%
+  table()
+xtable(cm_b3)
+```
+FPR: 190/1402 = 13.55%
+FNR: 1027/1661 = 61.83%
+PPV: 634/8241 = 76.85%
+p: 1661/3063 = 54.23%
+
+
+Subtract 4 from AA risk score 
+
+```{r}
+df_b4 <- mutate(df_bw, decile4 = ifelse(race=="African-American", decile_score - 4, decile_score)) %>%
+          mutate(riskclass4 = ifelse(decile4 > 4, "HighScore", "LowScore"))
+```
+
+Compute new confusion matrices
+```{r}
+cm_b4 <- df_b4 %>% filter(race == "African-American") %>% 
+  select(two_year_recid, riskclass4) %>%
+  table()
+xtable(cm_b4)
+```
+FPR: 114/1402 = 8.13%
+FNR: 1242/1661 = 74.77%
+PPV: 419/533 = 78.61%
+p: 1661/3063 = 54.23%
+
+
+#New thresholds for white defendants
+
+
+
+White risk scores + 1
+```{r}
+df_w1 <- mutate(df_bw, decile1 = ifelse(race=="Caucasian", decile_score + 1, decile_score)) %>%
+          mutate(riskclass1 = ifelse(decile1 > 4, "HighScore", "LowScore"))
+```
+
+Compute new confusion matrices
+```{r}
+cm_w1 <- df_w1 %>% filter(race == "Caucasian") %>% 
+  select(two_year_recid, riskclass1) %>%
+  table()
+xtable(cm_w1)
+```
+
+FPR: 402/1229 = 32.71%
+FNR: 310/822 = 37.71%
+PPV: 512/914 = 56.02%
+p: 822/2051 = 40.08%
+
+White risk scores + 2
+```{r}
+df_w2 <- mutate(df_bw, decile2 = ifelse(race=="Caucasian", decile_score + 2, decile_score)) %>%
+          mutate(riskclass2 = ifelse(decile2 > 4, "HighScore", "LowScore"))
+```
+
+Compute new confusion matrices
+```{r}
+cm_w2 <- df_w2 %>% filter(race == "Caucasian") %>% 
+  select(two_year_recid, riskclass2) %>%
+  table()
+xtable(cm_w2)
+```
+FPR: 552/1229 = 44.91%
+FNR: 228/822 = 27.74%
+PPV: 594/1146 = 51.83%
+p: 822/2051 = 40.08%
+
+
+White risk scores + 3
+```{r}
+df_w3 <- mutate(df_bw, decile3 = ifelse(race=="Caucasian", decile_score + 3, decile_score)) %>%
+          mutate(riskclass3 = ifelse(decile3 > 4, "HighScore", "LowScore"))
+```
+
+Compute new confusion matrices
+```{r}
+cm_w3 <- df_w3 %>% filter(race == "Caucasian") %>% 
+  select(two_year_recid, riskclass3) %>%
+  table()
+xtable(cm_w3)
+```
+FPR: 763/1229 = 62.08%
+FNR: 128/822 = 15.57%
+PPV: 694/1457 = 47.63%
+p: 822/2051 = 40.08%
+
+
+White risk scores + 4
+```{r}
+df_w4 <- mutate(df_bw, decile4 = ifelse(race=="Caucasian", decile_score + 4, decile_score)) %>%
+          mutate(riskclass4 = ifelse(decile4 > 4, "HighScore", "LowScore"))
+```
+
+Compute new confusion matrices
+```{r}
+cm_w4 <- df_w4 %>% filter(race == "Caucasian") %>% 
+  select(two_year_recid, riskclass4) %>%
+  table()
+xtable(cm_w4)
+```
+FPR: 763/1229 = 100%
+FNR: 128/822 = 0%
+PPV: 822/2051 = 40.08%
+p: 822/2051 = 40.08%
+
+
+#DIRECTION OF RACIAL BIAS (ROC CURVES)
+
+Subset for Black defendants
+```{r}
+df_b <- df_bw %>% filter(race_factor=="African-American")
+```
+Subset for White defendants
+```{r}
+df_w <- df_bw %>% filter(race_factor=="Caucasian")
+```
+
+
+```{r}
+library(ROCR)
+```
+
+Black ROC Curve
+```{r}
+recid.pred.b <- prediction(df_b$decile_score,df_b$two_year_recid)
+recid.perf.b <- performance(recid.pred.b,measure="tpr",x.measure="fpr")
+plot(recid.perf.b,xlab="FPR",ylab="TPR",main="African-American ROC curve")
+abline(a=0,b=1)
+```
+
+
+
+
+
+
+
+
+
+
+White ROC Curve
+```{r}
+recid.pred.w <- prediction(df_w$decile_score,df_w$two_year_recid)
+recid.perf.w <- performance(recid.pred.w,measure="tpr",x.measure="fpr")
+plot(recid.perf.w,xlab="FPR",ylab="TPR",main="Caucasian ROC curve")
+abline(a=0,b=1)
+```
+
+```{r}
+require(plotROC)
+ggplot(df_bw, aes(d = two_year_recid, m = decile_score, color = race)) + geom_roc() + style_roc() 
+```
+
+
+Adjustted Black ROC Curve (-1 from score)
+```{r}
+require(plotROC)
+ggplot(df_b1, aes(d = two_year_recid, m = decile1)) + geom_roc() + style_roc()
+```
+
+Adjustted Black ROC Curve (-2 from score)
+
+```{r}
+ggplot(df_b2, aes(d = two_year_recid, m = decile2)) + geom_roc() + style_roc()
+```
+
+
+Adjustted Black ROC Curve (-3 from score)
+
+```{r}
+ggplot(df_b3, aes(d = two_year_recid, m = decile3)) + geom_roc() + style_roc()
+```
+
+Adjustted Black ROC Curve (-4 from score)
+
+```{r}
+ggplot(df_b4, aes(d = two_year_recid, m = decile4)) + geom_roc() + style_roc()
+```
+
+
+ROC Curves by Gender
+
+```{r}
+ggplot(df_bw, aes(d = two_year_recid, m = decile_score, color = sex)) + geom_roc() + style_roc() 
+```
+
+ROC Curves by Age
+
+```{r}
+ggplot(df_bw, aes(d = two_year_recid, m = decile_score, color = age_factor)) + geom_roc() + style_roc() 
+```
+
+
+
+
+
+#RACIAL BIAS IN COMPAS RISK SCORES
+
+
+Logistic regression model for COMPAS score
+```{r}
+log_risk_score <- glm(score_factor ~ gender_factor + age_factor + race_factor +
+                            priors_count + crime_factor + two_year_recid, family="binomial", data=df_bw)
+summary(log_risk_score)
+```
+
+Black defendants are 46% more likely than white defendants to receive a higher score correcting for the seriousness of their crime, previous arrests, and future criminal behavior.
+
+```{r}
+control <- exp(-1.53356) / (1 + exp(-1.53356))
+exp(0.47992) / (1 - control + (control * exp(0.47992)))
+```
+
+```{r}
+texreg(log_risk_score)
+```
+
+
+#risk score logistic model for Black - 1
+```{r}
+#create a dummy variable for adjusted predicitions
+df_b1 <- mutate(df_b1, riskclass1_binary = ifelse(riskclass1=="LowScore", 0, 1))
+log_risk_score1 <- glm(riskclass1_binary ~ gender_factor + age_factor + race_factor +                           priors_count + crime_factor + two_year_recid, family="binomial", data=df_b1)
+summary(log_risk_score1)
+```
+
+
+
+If every decile score for Black defendants is subtracted by 1, White defendants are 7% more likely than Black defendants to receive a higher score correcting for the seriousness of their crime, previous arrests, and future criminal behavior.
+```{r}
+control <- exp(-1.50837) / (1 + exp(-1.50837))
+exp(-0.09340) / (1 - control + (control * exp(-0.09340)))
+```
+
+
+#subtract 2 from every AA decile score
+```{r}
+df_b2 <- mutate(df_b2, riskclass2_binary = ifelse(riskclass2=="LowScore", 0, 1))
+log_risk_score2 <- glm(riskclass2_binary ~ gender_factor + age_factor + race_factor +
+                            priors_count + crime_factor + two_year_recid, family="binomial", data=df_b2)
+summary(log_risk_score2)
+```
+
+If every decile score for Black defendants is subtracted by 2, White defendants are 40.1% more likely than white defendants to receive a higher score correcting for the seriousness of their crime, previous arrests, and future criminal behavior.
+```{r}
+control <- exp(-1.378254) / (1 + exp(-1.378254))
+exp(-0.618446 ) / (1 - control + (control * exp(-0.618446)))
+```
+
+
+
+
+#subtract 3 from every AA decile score
+```{r}
+df_b3 <- mutate(df_b3, riskclass3_binary = ifelse(riskclass3=="LowScore", 0, 1))
+log_risk_score3 <- glm(riskclass3_binary ~ gender_factor + age_factor + race_factor +
+                            priors_count + crime_factor + two_year_recid, family="binomial", data=df_b3)
+summary(log_risk_score3)
+```
+
+If every decile score for Black defendants is subtracted by 3, White defendants are 66% more likely than Black defendants to receive a higher score correcting for the seriousness of their crime, previous arrests, and future criminal behavior.
+
+```{r}
+control <- exp( -1.356742) / (1 + exp( -1.356742))
+exp(-1.239543) / (1 - control + (control * exp(-1.239543)))
+```
+
+
+#COMPAS Predictive Accuracy 
+
+```{r}
+library(survival)
+library(ggfortify)
+
+
+data <- filter(filter(read.csv(file="~/Desktop/Senior Year/Comp Stats/thesis/cox-parsed.csv", header = TRUE, sep = ","), score_text != "N/A"), end > start) %>%
+        mutate(race_factor = factor(race,
+                                  labels = c("African-American", 
+                                             "Asian",
+                                             "Caucasian", 
+                                             "Hispanic", 
+                                             "Native American",
+                                             "Other"))) %>%
+        within(race_factor <- relevel(race_factor, ref = 2)) %>%
+        mutate(score_factor = factor(score_text)) %>%
+        within(score_factor <- relevel(score_factor, ref=2))
+
+grp <- data[!duplicated(data$id),]
+nrow(grp)
+```
+
+```{r}
+summary(grp$score_factor)
+```
+
+```{r}
+summary(grp$race_factor)
+```
+
+```{r}
+f <- Surv(start, end, event, type="counting") ~ score_factor
+model <- coxph(f, data=data)
+summary(model)
+```
+
+
+```{r}
+decile_f <- Surv(start, end, event, type="counting") ~ decile_score
+dmodel <- coxph(decile_f, data=data)
+summary(dmodel)
+```
+
+```{r}
+f2 <- Surv(start, end, event, type="counting") ~ race_factor + score_factor + race_factor * score_factor
+model <- coxph(f2, data=data)
+print(summary(model))
+```
+
+#```{r eval=FALSE}
+import math
+print("Black High Hazard: %.2f" % (math.exp(-0.18976 + 1.28350)))
+print("White High Hazard: %.2f" % (math.exp(1.28350)))
+print("Black Medium Hazard: %.2f" % (math.exp(0.84286-0.17261)))
+print("White Medium Hazard: %.2f" % (math.exp(0.84286)))
+#```
+
+```{r}
+fit <- survfit(f, data=data)
+
+plotty <- function(fit, title) {
+  return(autoplot(fit, conf.int=T, censor=F) + ggtitle(title) + ylim(0,1))
+}
+plotty(fit, "Overall")
+
+```
+
+```{r}
+white <- filter(data, race == "Caucasian")
+white_fit <- survfit(f, data=white)
+
+black <- filter(data, race == "African-American")
+black_fit <- survfit(f, data=black)
+
+grid.arrange(plotty(white_fit, "White defendants"), 
+             plotty(black_fit, "Black defendants"), ncol=2)
+```
+
+```{r}
+summary(fit, times=c(730))
+```
+
+```{r}
+summary(black_fit, times=c(730))
+```
+
+```{r}
+summary(white_fit, times=c(730))
+```
+
+```{r}
+summary(coxph(f, data=white))
+```
+
+```{r}
+summary(coxph(f, data=black))
+```
+
